@@ -58,17 +58,38 @@ def display_message_part(part):
     elif part.part_kind == 'text':
         with st.chat_message("assistant"):
             st.markdown(part.content)
-    # You could handle ToolCallPart, ToolReturnPart, etc. as needed.
+    # You could handle ToolCallPart, ToolReturnPart, etc. if needed.
 
 async def run_agent_with_streaming(user_input: str):
     """
     Run the agent with streaming text for the user_input prompt,
     while maintaining the entire conversation in `st.session_state.messages`.
     """
-    # Prepare dependencies
+
+    # Pull the domain from session state (default if missing)
+    domain_name = st.session_state.get("domain_name", "generic_docs")
+
+    # Create a more comprehensive system prompt for troubleshooting
+    custom_expert_prompt = """
+You are a domain expert with knowledge from the crawled documentation.
+When the user asks troubleshooting questions, think carefully about possible causes and steps.
+Always provide step-by-step instructions for diagnosing and fixing issues.
+Provide references to relevant doc URLs or chunk titles where possible.
+If an answer is unknown or uncertain, be honest about it.
+"""
+
+    # Dynamically set the agent's system prompt
+    rag_agent.system_prompt = f"""
+You are an expert on {domain_name}.
+{custom_expert_prompt}
+"""
+
+    # Prepare dynamic dependencies (include domain_name here)
     deps = RAGDeps(
         supabase=supabase,
-        openai_client=openai_client
+        openai_client=openai_client,
+        domain_name=domain_name,
+        expert_prompt=custom_expert_prompt
     )
 
     # Run the agent in a stream
@@ -108,13 +129,18 @@ async def main():
         sitemaps_input = st.text_area("Sitemap URLs (comma separated)", value=os.getenv("SITEMAP_URLS", ""))
 
         if st.button("Set Domain"):
-            # Write environment variables (in a real app, you might manage these differently)
-            os.environ["EXPERT_DOMAIN_NAME"] = domain_name
-            os.environ["SITEMAP_URLS"] = sitemaps_input
+            # Update session state so the domain is remembered
+            st.session_state["domain_name"] = domain_name
+            st.session_state["sitemaps"] = sitemaps_input
             st.success(f"Set domain to '{domain_name}'. Sitemaps: {sitemaps_input}")
 
         if st.button("Crawl Now"):
             st.info("Crawling in progress; please wait...")
+
+            # Make sure the environment has the updated domain/sitemaps
+            os.environ["EXPERT_DOMAIN_NAME"] = st.session_state.get("domain_name", "generic_docs")
+            os.environ["SITEMAP_URLS"] = st.session_state.get("sitemaps", "")
+
             # Run the crawler script as a subprocess
             proc = subprocess.run(["python", "crawl_any_docs.py"], capture_output=True, text=True)
             st.text(proc.stdout)
@@ -137,7 +163,7 @@ async def main():
     user_input = st.chat_input("Ask a question about your domain docs...")
 
     if user_input:
-        # We append a new request to the conversation
+        # Append a new request to the conversation
         st.session_state.messages.append(
             ModelRequest(parts=[UserPromptPart(content=user_input)])
         )

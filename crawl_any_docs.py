@@ -23,7 +23,7 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_SERVICE_KEY")
 )
 
-# Read domain name and sitemaps from environment
+# Read domain name and sitemaps from environment or defaults
 EXPERT_DOMAIN_NAME = os.getenv("EXPERT_DOMAIN_NAME", "generic_docs")
 SITEMAP_URLS = os.getenv("SITEMAP_URLS", "").split(",")
 
@@ -39,7 +39,7 @@ class ProcessedChunk:
 
 def chunk_text(text: str, chunk_size: int = 5000) -> List[str]:
     """
-    Split text into chunks, respecting code blocks and paragraphs.
+    Split text into roughly chunk_size pieces, respecting some boundaries.
     """
     chunks = []
     start = 0
@@ -103,7 +103,7 @@ async def get_embedding(text: str) -> List[float]:
     """Get embedding vector from OpenAI."""
     try:
         response = await openai_client.embeddings.create(
-            model="text-embedding-3-small",
+            model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-large"),
             input=text
         )
         return response.data[0].embedding

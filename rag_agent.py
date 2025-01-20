@@ -1,7 +1,6 @@
 from __future__ import annotations as _annotations
 
 from dataclasses import dataclass
-from dotenv import load_dotenv
 import logfire
 import os
 
@@ -11,36 +10,27 @@ from openai import AsyncOpenAI
 from supabase import Client
 from typing import List
 
+# Load environment variables
+from dotenv import load_dotenv
 load_dotenv()
 
-# Read domain name and optional custom prompt from env
-EXPERT_DOMAIN_NAME = os.getenv("EXPERT_DOMAIN_NAME", "generic_docs")
-EXPERT_PROMPT = os.getenv("EXPERT_PROMPT", "You are a domain expert with knowledge from the crawled documentation.")
+logfire.configure(send_to_logfire='if-token-present')
 
-# Choose your default LLM model
+# Choose your default LLM model (still can read from env as fallback)
 llm = os.getenv('LLM_MODEL', 'gpt-4o-mini')
 model = OpenAIModel(llm)
-
-logfire.configure(send_to_logfire='if-token-present')
 
 @dataclass
 class RAGDeps:
     supabase: Client
     openai_client: AsyncOpenAI
+    domain_name: str
+    expert_prompt: str = "You are a domain expert with knowledge from the crawled documentation."
 
-# Build a dynamic system prompt
-system_prompt = f"""
-You are an expert on {EXPERT_DOMAIN_NAME}.
-{EXPERT_PROMPT}
-
-When a user asks a question, always consider using the retrieval tool to find relevant docs for {EXPERT_DOMAIN_NAME}.
-If an answer is not found in the docs, be honest about it.
-Provide references to the documents (URL or chunk title) you used, when applicable.
-"""
-
+# We'll keep the system_prompt empty here, since we now set it dynamically in streamlit_ui.py.
 rag_agent = Agent(
     model,
-    system_prompt=system_prompt,
+    system_prompt="",
     deps_type=RAGDeps,
     retries=2
 )
@@ -49,7 +39,7 @@ async def get_embedding(text: str, openai_client: AsyncOpenAI) -> List[float]:
     """Get embedding vector from OpenAI."""
     try:
         response = await openai_client.embeddings.create(
-            model="text-embedding-3-large",
+            model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-large"),
             input=text
         )
         return response.data[0].embedding
@@ -60,16 +50,18 @@ async def get_embedding(text: str, openai_client: AsyncOpenAI) -> List[float]:
 @rag_agent.tool
 async def retrieve_relevant_documentation(ctx: RunContext[RAGDeps], user_query: str) -> str:
     """
-    Retrieve relevant documentation chunks from site_pages where metadata->>'domain' = EXPERT_DOMAIN_NAME.
+    Retrieve relevant documentation chunks from site_pages for ctx.deps.domain_name.
     """
     try:
+        domain_name = ctx.deps.domain_name
         query_embedding = await get_embedding(user_query, ctx.deps.openai_client)
+
         result = ctx.deps.supabase.rpc(
             'match_site_pages',
             {
                 'query_embedding': query_embedding,
                 'match_count': 5,
-                'filter': {'domain': EXPERT_DOMAIN_NAME}
+                'filter': {'domain': domain_name}
             }
         ).execute()
 
@@ -94,12 +86,13 @@ async def retrieve_relevant_documentation(ctx: RunContext[RAGDeps], user_query: 
 @rag_agent.tool
 async def list_documentation_pages(ctx: RunContext[RAGDeps]) -> List[str]:
     """
-    Retrieve a list of all URLs for the current domain (metadata->>'domain' = EXPERT_DOMAIN_NAME).
+    Retrieve a list of all URLs for the current domain in ctx.deps.domain_name.
     """
     try:
+        domain_name = ctx.deps.domain_name
         result = ctx.deps.supabase.from_('site_pages') \
             .select('url') \
-            .eq('metadata->>domain', EXPERT_DOMAIN_NAME) \
+            .eq('metadata->>domain', domain_name) \
             .execute()
         if not result.data:
             return []
@@ -111,13 +104,14 @@ async def list_documentation_pages(ctx: RunContext[RAGDeps]) -> List[str]:
 @rag_agent.tool
 async def get_page_content(ctx: RunContext[RAGDeps], url: str) -> str:
     """
-    Retrieve the full content for a page (all chunks) for the current domain.
+    Retrieve the full content for a page (all chunks) for the current domain in ctx.deps.domain_name.
     """
     try:
+        domain_name = ctx.deps.domain_name
         result = ctx.deps.supabase.from_('site_pages') \
             .select('title, content, chunk_number') \
             .eq('url', url) \
-            .eq('metadata->>domain', EXPERT_DOMAIN_NAME) \
+            .eq('metadata->>domain', domain_name) \
             .order('chunk_number') \
             .execute()
 
